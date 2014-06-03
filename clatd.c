@@ -29,15 +29,6 @@
 #include <arpa/inet.h>
 #include <fcntl.h>
 
-#include <netinet/in.h>
-#include <netinet/ip.h>
-#include <netinet/ip_icmp.h>
-#include <netinet/udp.h>
-#include <netinet/tcp.h>
-#include <netinet/ip6.h>
-#include <netinet/icmp6.h>
-#include <linux/icmp.h>
-
 #include <sys/capability.h>
 #include <sys/uio.h>
 #include <linux/prctl.h>
@@ -47,8 +38,6 @@
 
 #include <private/android_filesystem_config.h>
 
-#include "ipv4.h"
-#include "ipv6.h"
 #include "translate.h"
 #include "clatd.h"
 #include "config.h"
@@ -62,13 +51,11 @@
 #define DEVICENAME6 "clat"
 #define DEVICENAME4 "clat4"
 
+/* 40 bytes IPv6 header - 20 bytes IPv4 header + 8 bytes fragment header */
+#define MTU_DELTA 28
+
 int forwarding_fd = -1;
 volatile sig_atomic_t running = 1;
-
-struct tun_data {
-  char device6[IFNAMSIZ], device4[IFNAMSIZ];
-  int fd6, fd4;
-};
 
 /* function: set_forwarding
  * enables/disables ipv6 forwarding
@@ -84,7 +71,7 @@ void set_forwarding(int fd, const char *setting) {
 /* function: stop_loop
  * signal handler: stop the event loop
  */
-void stop_loop(int signal) {
+void stop_loop() {
   running = 0;
 }
 
@@ -146,7 +133,6 @@ void deconfigure_tun_ipv6(const struct tun_data *tunnel) {
  * tunnel - tun device data
  */
 void configure_tun_ipv6(const struct tun_data *tunnel) {
-  struct in6_addr local_nat64_prefix_6;
   int status;
 
   status = if_route(tunnel->device6, AF_INET6, &Global_Clatd_Config.ipv6_local_subnet,
@@ -202,6 +188,13 @@ void configure_tun_ip(const struct tun_data *tunnel) {
       32, &Global_Clatd_Config.ipv4_local_subnet);
   if(status < 0) {
     logmsg(ANDROID_LOG_FATAL,"configure_tun_ip/if_address(4) failed: %s",strerror(-status));
+    exit(1);
+  }
+
+  status = add_address(tunnel->device6, AF_INET6, &Global_Clatd_Config.ipv6_local_address,
+      64, NULL);
+  if(status < 0) {
+    logmsg(ANDROID_LOG_FATAL,"configure_tun_ip/if_address(6) failed: %s",strerror(-status));
     exit(1);
   }
 
@@ -281,8 +274,9 @@ void configure_interface(const char *uplink_interface, const char *plat_prefix, 
     Global_Clatd_Config.mtu = 1280;
   }
 
-  if(Global_Clatd_Config.ipv4mtu <= 0 || (Global_Clatd_Config.ipv4mtu > Global_Clatd_Config.mtu - 20)) {
-    Global_Clatd_Config.ipv4mtu = Global_Clatd_Config.mtu-20;
+  if(Global_Clatd_Config.ipv4mtu <= 0 ||
+     Global_Clatd_Config.ipv4mtu > Global_Clatd_Config.mtu - MTU_DELTA) {
+    Global_Clatd_Config.ipv4mtu = Global_Clatd_Config.mtu - MTU_DELTA;
     logmsg(ANDROID_LOG_WARN,"ipv4mtu now set to = %d",Global_Clatd_Config.ipv4mtu);
   }
 
@@ -299,56 +293,6 @@ void configure_interface(const char *uplink_interface, const char *plat_prefix, 
   }
 
   configure_tun_ip(tunnel);
-}
-
-/* function: packet_handler
- * takes a tun header and a packet and sends it down the stack
- * tunnel     - tun device data
- * tun_header - tun header
- * packet     - packet
- * packetsize - size of packet
- */
-void packet_handler(const struct tun_data *tunnel, struct tun_pi *tun_header, const char *packet,
-                    size_t packetsize) {
-  int fd;
-  int iov_len = 0;
-
-  // Allocate buffers for all packet headers.
-  struct tun_pi tun_targ;
-  char iphdr[sizeof(struct ip6_hdr)];
-  char transporthdr[MAX_TCP_HDR];
-  char icmp_iphdr[sizeof(struct ip6_hdr)];
-  char icmp_transporthdr[MAX_TCP_HDR];
-
-  // iovec of the packets we'll send. This gets passed down to the translation functions.
-  clat_packet out = {
-    { &tun_targ, sizeof(tun_targ) },  // Tunnel header.
-    { iphdr, 0 },                     // IP header.
-    { transporthdr, 0 },              // Transport layer header.
-    { icmp_iphdr, 0 },                // ICMP error inner IP header.
-    { icmp_transporthdr, 0 },         // ICMP error transport layer header.
-    { NULL, 0 },                      // Payload. No buffer, it's a pointer to the original payload.
-  };
-
-  if(tun_header->flags != 0) {
-    logmsg(ANDROID_LOG_WARN,"packet_handler: unexpected flags = %d", tun_header->flags);
-  }
-
-  if(ntohs(tun_header->proto) == ETH_P_IP) {
-    fd = tunnel->fd6;
-    fill_tun_header(&tun_targ, ETH_P_IPV6);
-    iov_len = ipv4_packet(out, CLAT_POS_IPHDR, packet, packetsize);
-  } else if(ntohs(tun_header->proto) == ETH_P_IPV6) {
-    fd = tunnel->fd4;
-    fill_tun_header(&tun_targ, ETH_P_IP);
-    iov_len = ipv6_packet(out, CLAT_POS_IPHDR, packet, packetsize);
-  } else {
-    logmsg(ANDROID_LOG_WARN,"packet_handler: unknown packet type = %x",tun_header->proto);
-  }
-
-  if (iov_len > 0) {
-    writev(fd, out, iov_len);
-  }
 }
 
 /* function: read_packet
@@ -372,7 +316,6 @@ void read_packet(int active_fd, const struct tun_data *tunnel) {
     logmsg(ANDROID_LOG_WARN,"read_packet/tun interface removed");
     running = 0;
   } else {
-    struct tun_pi tun_header;
     ssize_t header_size = sizeof(struct tun_pi);
 
     if(readlen < header_size) {
@@ -380,7 +323,7 @@ void read_packet(int active_fd, const struct tun_data *tunnel) {
       return;
     }
 
-    packet_handler(tunnel, (struct tun_pi *) packet, packet + header_size, readlen - header_size);
+    translate_packet(tunnel, (struct tun_pi *) packet, packet + header_size, readlen - header_size);
   }
 }
 
@@ -470,7 +413,7 @@ int main(int argc, char **argv) {
   // open the tunnel device before dropping privs
   tunnel.fd6 = tun_open();
   if(tunnel.fd6 < 0) {
-    logmsg(ANDROID_LOG_FATAL, "tun_open failed: %s", strerror(errno));
+    logmsg(ANDROID_LOG_FATAL, "tun_open6 failed: %s", strerror(errno));
     exit(1);
   }
 

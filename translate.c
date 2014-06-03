@@ -16,15 +16,7 @@
  * translate.c - CLAT functions / partial implementation of rfc6145
  */
 #include <string.h>
-
-#include <netinet/in.h>
-#include <netinet/ip.h>
-#include <netinet/ip_icmp.h>
-#include <netinet/udp.h>
-#include <netinet/tcp.h>
-#include <netinet/ip6.h>
-#include <netinet/icmp6.h>
-#include <linux/icmp.h>
+#include <sys/uio.h>
 
 #include "icmp.h"
 #include "translate.h"
@@ -149,7 +141,7 @@ void fill_ip_header(struct iphdr *ip, uint16_t payload_len, uint8_t protocol,
   // Third-party ICMPv6 message. This may have been originated by an native IPv6 address.
   // In that case, the source IPv6 address can't be translated and we need to make up an IPv4
   // source address. For now, use 255.0.0.<ttl>, which at least looks useful in traceroute.
-  if (ip->saddr == (uint32_t) INADDR_NONE) {
+  if ((uint32_t) ip->saddr == INADDR_NONE) {
     ttl_guess = icmp_guess_ttl(old_header->ip6_hlim);
     ip->saddr = htonl((0xff << 24) + ttl_guess);
   }
@@ -173,6 +165,54 @@ void fill_ip6_header(struct ip6_hdr *ip6, uint16_t payload_len, uint8_t protocol
 
   ip6->ip6_src = ipv4_addr_to_ipv6_addr(old_header->saddr);
   ip6->ip6_dst = ipv4_addr_to_ipv6_addr(old_header->daddr);
+}
+
+/* function: maybe_fill_frag_header
+ * fills a fragmentation header
+ * generate an ipv6 fragment header from an ipv4 header
+ * frag_hdr    - target (ipv6) fragmentation header
+ * ip6_targ    - target (ipv6) header
+ * old_header  - (ipv4) source packet header
+ * returns: the length of the fragmentation header if present, or zero if not present
+ */
+size_t maybe_fill_frag_header(struct ip6_frag *frag_hdr, struct ip6_hdr *ip6_targ,
+                              const struct iphdr *old_header) {
+  uint16_t frag_flags = ntohs(old_header->frag_off);
+  uint16_t frag_off = frag_flags & IP_OFFMASK;
+  if (frag_off == 0 && (frag_flags & IP_MF) == 0) {
+    // Not a fragment.
+    return 0;
+  }
+
+  frag_hdr->ip6f_nxt = ip6_targ->ip6_nxt;
+  frag_hdr->ip6f_reserved = 0;
+  // In IPv4, the offset is the bottom 13 bits; in IPv6 it's the top 13 bits.
+  frag_hdr->ip6f_offlg = htons(frag_off << 3);
+  if (frag_flags & IP_MF) {
+    frag_hdr->ip6f_offlg |= IP6F_MORE_FRAG;
+  }
+  frag_hdr->ip6f_ident = htonl(ntohs(old_header->id));
+  ip6_targ->ip6_nxt = IPPROTO_FRAGMENT;
+
+  return sizeof(*frag_hdr);
+}
+
+/* function: parse_frag_header
+ * return the length of the fragmentation header if present, or zero if not present
+ * generate an ipv6 fragment header from an ipv4 header
+ * frag_hdr    - (ipv6) fragmentation header
+ * ip_targ     - target (ipv4) header
+ * returns: the next header value
+ */
+uint8_t parse_frag_header(const struct ip6_frag *frag_hdr, struct iphdr *ip_targ) {
+  uint16_t frag_off = (ntohs(frag_hdr->ip6f_offlg & IP6F_OFF_MASK) >> 3);
+  if (frag_hdr->ip6f_offlg & IP6F_MORE_FRAG) {
+    frag_off |= IP_MF;
+  }
+  ip_targ->frag_off = htons(frag_off);
+  ip_targ->id = htons(ntohl(frag_hdr->ip6f_ident) & 0xffff);
+  ip_targ->protocol = frag_hdr->ip6f_nxt;
+  return frag_hdr->ip6f_nxt;
 }
 
 /* function: icmp_to_icmp6
@@ -208,12 +248,10 @@ int icmp_to_icmp6(clat_packet out, int pos, const struct icmphdr *icmp, uint32_t
     // The pseudo-header checksum was calculated on the transport length of the original IPv4
     // packet that we were asked to translate. This transport length is 20 bytes smaller than it
     // needs to be, because the ICMP error contains an IPv4 header, which we will be translating to
-    // an IPv6 header, which is 20 bytes longer. Fix it up here. This is simpler than the
-    // alternative, which is to always update the pseudo-header checksum in all UDP/TCP/ICMP
-    // translation functions (rather than pre-calculating it when translating the IPv4 header).
+    // an IPv6 header, which is 20 bytes longer. Fix it up here.
     // We only need to do this for ICMP->ICMPv6, not ICMPv6->ICMP, because ICMP does not use the
     // pseudo-header when calculating its checksum (as the IPv4 header has its own checksum).
-    checksum = htonl(ntohl(checksum) + 20);
+    checksum = checksum + htons(20);
   } else if (icmp6_type == ICMP6_ECHO_REQUEST || icmp6_type == ICMP6_ECHO_REPLY) {
     // Ping packet.
     icmp6_targ->icmp6_id = icmp->un.echo.id;
@@ -236,16 +274,14 @@ int icmp_to_icmp6(clat_packet out, int pos, const struct icmphdr *icmp, uint32_t
  * translate ipv6 icmp to ipv4 icmp
  * out          - output packet
  * icmp6        - source packet icmp6 header
- * checksum     - pseudo-header checksum (unused)
  * payload      - icmp6 payload
  * payload_size - size of payload
  * returns: the highest position in the output clat_packet that's filled in
  */
-int icmp6_to_icmp(clat_packet out, int pos, const struct icmp6_hdr *icmp6, uint32_t checksum,
+int icmp6_to_icmp(clat_packet out, int pos, const struct icmp6_hdr *icmp6,
                   const char *payload, size_t payload_size) {
   struct icmphdr *icmp_targ = out[pos].iov_base;
   uint8_t icmp_type;
-  int ttl;
   int clat_packet_len;
 
   memset(icmp_targ, 0, sizeof(struct icmphdr));
@@ -280,14 +316,32 @@ int icmp6_to_icmp(clat_packet out, int pos, const struct icmp6_hdr *icmp6, uint3
   return clat_packet_len;
 }
 
+/* function: generic_packet
+ * takes a generic IP packet and sets it up for translation
+ * out      - output packet
+ * pos      - position in the output packet of the transport header
+ * payload  - pointer to IP payload
+ * len      - size of ip payload
+ * returns: the highest position in the output clat_packet that's filled in
+ */
+int generic_packet(clat_packet out, int pos, const char *payload, size_t len) {
+  out[pos].iov_len = 0;
+  out[CLAT_POS_PAYLOAD].iov_base = (char *) payload;
+  out[CLAT_POS_PAYLOAD].iov_len = len;
+
+  return CLAT_POS_PAYLOAD + 1;
+}
+
 /* function: udp_packet
  * takes a udp packet and sets it up for translation
  * out      - output packet
  * udp      - pointer to udp header in packet
- * checksum - pseudo-header checksum
+ * old_sum  - pseudo-header checksum of old header
+ * new_sum  - pseudo-header checksum of new header
  * len      - size of ip payload
  */
-int udp_packet(clat_packet out, int pos, const struct udphdr *udp, uint32_t checksum, size_t len) {
+int udp_packet(clat_packet out, int pos, const struct udphdr *udp,
+               uint32_t old_sum, uint32_t new_sum, size_t len) {
   const char *payload;
   size_t payload_size;
 
@@ -299,7 +353,7 @@ int udp_packet(clat_packet out, int pos, const struct udphdr *udp, uint32_t chec
   payload = (const char *) (udp + 1);
   payload_size = len - sizeof(struct udphdr);
 
-  return udp_translate(out, pos, udp, checksum, payload, payload_size);
+  return udp_translate(out, pos, udp, old_sum, new_sum, payload, payload_size);
 }
 
 /* function: tcp_packet
@@ -310,7 +364,8 @@ int udp_packet(clat_packet out, int pos, const struct udphdr *udp, uint32_t chec
  * len      - size of ip payload
  * returns: the highest position in the output clat_packet that's filled in
  */
-int tcp_packet(clat_packet out, int pos, const struct tcphdr *tcp, uint32_t checksum, size_t len) {
+int tcp_packet(clat_packet out, int pos, const struct tcphdr *tcp,
+               uint32_t old_sum, uint32_t new_sum, size_t len) {
   const char *payload;
   size_t payload_size, header_size;
 
@@ -333,20 +388,21 @@ int tcp_packet(clat_packet out, int pos, const struct tcphdr *tcp, uint32_t chec
   payload = ((const char *) tcp) + header_size;
   payload_size = len - header_size;
 
-  return tcp_translate(out, pos, tcp, header_size, checksum, payload, payload_size);
+  return tcp_translate(out, pos, tcp, header_size, old_sum, new_sum, payload, payload_size);
 }
 
 /* function: udp_translate
  * common between ipv4/ipv6 - setup checksum and send udp packet
  * out          - output packet
  * udp          - udp header
- * checksum     - pseudo-header checksum
+ * old_sum      - pseudo-header checksum of old header
+ * new_sum      - pseudo-header checksum of new header
  * payload      - tcp payload
  * payload_size - size of payload
  * returns: the highest position in the output clat_packet that's filled in
  */
-int udp_translate(clat_packet out, int pos, const struct udphdr *udp, uint32_t checksum,
-                  const char *payload, size_t payload_size) {
+int udp_translate(clat_packet out, int pos, const struct udphdr *udp, uint32_t old_sum,
+                  uint32_t new_sum, const char *payload, size_t payload_size) {
   struct udphdr *udp_targ = out[pos].iov_base;
 
   memcpy(udp_targ, udp, sizeof(struct udphdr));
@@ -355,8 +411,22 @@ int udp_translate(clat_packet out, int pos, const struct udphdr *udp, uint32_t c
   out[CLAT_POS_PAYLOAD].iov_base = (char *) payload;
   out[CLAT_POS_PAYLOAD].iov_len = payload_size;
 
-  udp_targ->check = 0;  // Checksum field must be 0 when calculating checksum.
-  udp_targ->check = packet_checksum(checksum, out, pos);
+  if (udp_targ->check) {
+    udp_targ->check = ip_checksum_adjust(udp->check, old_sum, new_sum);
+  } else {
+    // Zero checksums are special. RFC 768 says, "An all zero transmitted checksum value means that
+    // the transmitter generated no checksum (for debugging or for higher level protocols that
+    // don't care)." However, in IPv6 zero UDP checksums were only permitted by RFC 6935 (2013). So
+    // for safety we recompute it.
+    udp_targ->check = 0;  // Checksum field must be 0 when calculating checksum.
+    udp_targ->check = packet_checksum(new_sum, out, pos);
+  }
+
+  // RFC 768: "If the computed checksum is zero, it is transmitted as all ones (the equivalent
+  // in one's complement arithmetic)."
+  if (!udp_targ->check) {
+    udp_targ->check = 0xffff;
+  }
 
   return CLAT_POS_PAYLOAD + 1;
 }
@@ -370,12 +440,9 @@ int udp_translate(clat_packet out, int pos, const struct udphdr *udp, uint32_t c
  * payload      - tcp payload
  * payload_size - size of payload
  * returns: the highest position in the output clat_packet that's filled in
- *
- * TODO: mss rewrite
- * TODO: hosts without pmtu discovery - non DF packets will rely on fragmentation (unimplemented)
  */
 int tcp_translate(clat_packet out, int pos, const struct tcphdr *tcp, size_t header_size,
-                  uint32_t checksum, const char *payload, size_t payload_size) {
+                  uint32_t old_sum, uint32_t new_sum, const char *payload, size_t payload_size) {
   struct tcphdr *tcp_targ = out[pos].iov_base;
   out[pos].iov_len = header_size;
 
@@ -392,8 +459,61 @@ int tcp_translate(clat_packet out, int pos, const struct tcphdr *tcp, size_t hea
   out[CLAT_POS_PAYLOAD].iov_base = (char *)payload;
   out[CLAT_POS_PAYLOAD].iov_len = payload_size;
 
-  tcp_targ->check = 0;  // Checksum field must be 0 when calculating checksum.
-  tcp_targ->check = packet_checksum(checksum, out, pos);
+  tcp_targ->check = ip_checksum_adjust(tcp->check, old_sum, new_sum);
 
   return CLAT_POS_PAYLOAD + 1;
+}
+
+/* function: translate_packet
+ * takes a tun header and a packet and sends it down the stack
+ * tunnel     - tun device data
+ * tun_header - tun header
+ * packet     - packet
+ * packetsize - size of packet
+ */
+void translate_packet(const struct tun_data *tunnel, struct tun_pi *tun_header, const char *packet,
+                      size_t packetsize) {
+  int fd;
+  int iov_len = 0;
+
+  // Allocate buffers for all packet headers.
+  struct tun_pi tun_targ;
+  char iphdr[sizeof(struct ip6_hdr)];
+  char fraghdr[sizeof(struct ip6_frag)];
+  char transporthdr[MAX_TCP_HDR];
+  char icmp_iphdr[sizeof(struct ip6_hdr)];
+  char icmp_fraghdr[sizeof(struct ip6_frag)];
+  char icmp_transporthdr[MAX_TCP_HDR];
+
+  // iovec of the packets we'll send. This gets passed down to the translation functions.
+  clat_packet out = {
+    { &tun_targ, sizeof(tun_targ) },  // Tunnel header.
+    { iphdr, 0 },                     // IP header.
+    { fraghdr, 0 },                   // Fragment header.
+    { transporthdr, 0 },              // Transport layer header.
+    { icmp_iphdr, 0 },                // ICMP error inner IP header.
+    { icmp_fraghdr, 0 },              // ICMP error fragmentation header.
+    { icmp_transporthdr, 0 },         // ICMP error transport layer header.
+    { NULL, 0 },                      // Payload. No buffer, it's a pointer to the original payload.
+  };
+
+  if(tun_header->flags != 0) {
+    logmsg(ANDROID_LOG_WARN, "translate_packet: unexpected flags = %d", tun_header->flags);
+  }
+
+  if(ntohs(tun_header->proto) == ETH_P_IP) {
+    fd = tunnel->fd6;
+    fill_tun_header(&tun_targ, ETH_P_IPV6);
+    iov_len = ipv4_packet(out, CLAT_POS_IPHDR, packet, packetsize);
+  } else if(ntohs(tun_header->proto) == ETH_P_IPV6) {
+    fd = tunnel->fd4;
+    fill_tun_header(&tun_targ, ETH_P_IP);
+    iov_len = ipv6_packet(out, CLAT_POS_IPHDR, packet, packetsize);
+  } else {
+    logmsg(ANDROID_LOG_WARN, "translate_packet: unknown packet type = %x",tun_header->proto);
+  }
+
+  if (iov_len > 0) {
+    writev(fd, out, iov_len);
+  }
 }

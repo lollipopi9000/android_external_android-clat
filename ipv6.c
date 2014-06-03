@@ -17,19 +17,10 @@
  */
 #include <string.h>
 
-#include <netinet/in.h>
-#include <netinet/ip.h>
-#include <netinet/ip_icmp.h>
-#include <netinet/udp.h>
-#include <netinet/tcp.h>
-#include <netinet/ip6.h>
-#include <netinet/icmp6.h>
-#include <linux/icmp.h>
 #include <arpa/inet.h>
 
 #include "translate.h"
 #include "checksum.h"
-#include "ipv6.h"
 #include "logging.h"
 #include "dump.h"
 #include "config.h"
@@ -43,8 +34,7 @@
  * len      - size of ip payload
  * returns: the highest position in the output clat_packet that's filled in
  */
-int icmp6_packet(clat_packet out, int pos, const struct icmp6_hdr *icmp6, uint32_t checksum,
-                 size_t len) {
+int icmp6_packet(clat_packet out, int pos, const struct icmp6_hdr *icmp6, size_t len) {
   const char *payload;
   size_t payload_size;
 
@@ -56,7 +46,7 @@ int icmp6_packet(clat_packet out, int pos, const struct icmp6_hdr *icmp6, uint32
   payload = (const char *) (icmp6 + 1);
   payload_size = len - sizeof(struct icmp6_hdr);
 
-  return icmp6_to_icmp(out, pos, icmp6, checksum, payload, payload_size);
+  return icmp6_to_icmp(out, pos, icmp6, payload, payload_size);
 }
 
 /* function: log_bad_address
@@ -64,16 +54,18 @@ int icmp6_packet(clat_packet out, int pos, const struct icmp6_hdr *icmp6, uint32
  * fmt     - printf-style format, use %s to place the address
  * badaddr - the bad address in question
  */
-void log_bad_address(const char *fmt, const struct in6_addr *src, const struct in6_addr *dst) {
 #if CLAT_DEBUG
+void log_bad_address(const char *fmt, const struct in6_addr *src, const struct in6_addr *dst) {
   char srcstr[INET6_ADDRSTRLEN];
   char dststr[INET6_ADDRSTRLEN];
 
   inet_ntop(AF_INET6, src, srcstr, sizeof(srcstr));
   inet_ntop(AF_INET6, dst, dststr, sizeof(dststr));
   logmsg_dbg(ANDROID_LOG_ERROR, fmt, srcstr, dststr);
-#endif
 }
+#else
+#define log_bad_address(fmt, src, dst)
+#endif
 
 /* function: ipv6_packet
  * takes an ipv6 packet and hands it off to the layer 4 protocol function
@@ -85,12 +77,12 @@ void log_bad_address(const char *fmt, const struct in6_addr *src, const struct i
 int ipv6_packet(clat_packet out, int pos, const char *packet, size_t len) {
   const struct ip6_hdr *ip6 = (struct ip6_hdr *) packet;
   struct iphdr *ip_targ = (struct iphdr *) out[pos].iov_base;
+  struct ip6_frag *frag_hdr = NULL;
   uint8_t protocol;
   const char *next_header;
   size_t len_left;
-  uint32_t checksum;
+  uint32_t old_sum, new_sum;
   int iov_len;
-  int i;
 
   if(len < sizeof(struct ip6_hdr)) {
     logmsg_dbg(ANDROID_LOG_ERROR, "ipv6_packet/too short for an ip6 header: %d", len);
@@ -121,10 +113,6 @@ int ipv6_packet(clat_packet out, int pos, const char *packet, size_t len) {
   len_left = len - sizeof(struct ip6_hdr);
 
   protocol = ip6->ip6_nxt;
-  if (protocol == IPPROTO_ICMPV6) {
-    // ICMP and ICMPv6 have different protocol numbers.
-    protocol = IPPROTO_ICMP;
-  }
 
   /* Fill in the IPv4 header. We need to do this before we translate the packet because TCP and
    * UDP include parts of the IP header in the checksum. Set the length to zero because we don't
@@ -133,19 +121,48 @@ int ipv6_packet(clat_packet out, int pos, const char *packet, size_t len) {
   fill_ip_header(ip_targ, 0, protocol, ip6);
   out[pos].iov_len = sizeof(struct iphdr);
 
-  // Calculate the pseudo-header checksum.
-  checksum = ipv4_pseudo_header_checksum(0, ip_targ, len_left);
+  // If there's a Fragment header, parse it and decide what the next header is.
+  // Do this before calculating the pseudo-header checksum because it updates the next header value.
+  if (protocol == IPPROTO_FRAGMENT) {
+    frag_hdr = (struct ip6_frag *) next_header;
+    if (len_left < sizeof(*frag_hdr)) {
+      logmsg_dbg(ANDROID_LOG_ERROR, "ipv6_packet/too short for fragment header: %d", len);
+      return 0;
+    }
 
-  // does not support IPv6 extension headers, this will drop any packet with them
-  if(protocol == IPPROTO_ICMP) {
-    iov_len = icmp6_packet(out, pos + 1, (const struct icmp6_hdr *) next_header, checksum,
-                           len_left);
-  } else if(ip6->ip6_nxt == IPPROTO_TCP) {
-    iov_len = tcp_packet(out, pos + 1, (const struct tcphdr *) next_header, checksum,
+    next_header += sizeof(*frag_hdr);
+    len_left -= sizeof(*frag_hdr);
+
+    protocol = parse_frag_header(frag_hdr, ip_targ);
+  }
+
+  // ICMP and ICMPv6 have different protocol numbers.
+  if (protocol == IPPROTO_ICMPV6) {
+    protocol = IPPROTO_ICMP;
+    ip_targ->protocol = IPPROTO_ICMP;
+  }
+
+  /* Calculate the pseudo-header checksum.
+   * Technically, the length that is used in the pseudo-header checksum is the transport layer
+   * length, which is not the same as len_left in the case of fragmented packets. But since
+   * translation does not change the transport layer length, the checksum is unaffected.
+   */
+  old_sum = ipv6_pseudo_header_checksum(ip6, len_left, protocol);
+  new_sum = ipv4_pseudo_header_checksum(ip_targ, len_left);
+
+  // Does not support IPv6 extension headers except Fragment.
+  if (frag_hdr && (frag_hdr->ip6f_offlg & IP6F_OFF_MASK)) {
+    iov_len = generic_packet(out, pos + 2, next_header, len_left);
+  } else if (protocol == IPPROTO_ICMP) {
+    iov_len = icmp6_packet(out, pos + 2, (const struct icmp6_hdr *) next_header, len_left);
+  } else if (protocol == IPPROTO_TCP) {
+    iov_len = tcp_packet(out, pos + 2, (const struct tcphdr *) next_header, old_sum, new_sum,
                          len_left);
-  } else if(ip6->ip6_nxt == IPPROTO_UDP) {
-    iov_len = udp_packet(out, pos + 1, (const struct udphdr *) next_header, checksum,
+  } else if (protocol == IPPROTO_UDP) {
+    iov_len = udp_packet(out, pos + 2, (const struct udphdr *) next_header, old_sum, new_sum,
                          len_left);
+  } else if (protocol == IPPROTO_GRE) {
+    iov_len = generic_packet(out, pos + 2, next_header, len_left);
   } else {
 #if CLAT_DEBUG
     logmsg(ANDROID_LOG_ERROR, "ipv6_packet/unknown next header type: %x", ip6->ip6_nxt);
