@@ -364,7 +364,7 @@ void read_packet(int read_fd, int write_fd, int to_ipv6) {
 
   packet = (uint8_t *) (tun_header + 1);
   readlen -= sizeof(*tun_header);
-  translate_packet(write_fd, to_ipv6, packet, readlen);
+  translate_packet(write_fd, to_ipv6, packet, readlen, TP_CSUM_NONE);
 }
 
 /* function: event_loop

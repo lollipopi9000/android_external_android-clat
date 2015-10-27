@@ -108,8 +108,8 @@ struct in6_addr ipv4_addr_to_ipv6_addr(uint32_t addr4) {
  * tun_header - tunnel header, already allocated
  * proto      - ethernet protocol id: ETH_P_IP(ipv4) or ETH_P_IPV6(ipv6)
  */
-void fill_tun_header(struct tun_pi *tun_header, uint16_t proto) {
-  tun_header->flags = 0;
+void fill_tun_header(struct tun_pi *tun_header, uint16_t proto, uint16_t skip_csum) {
+  tun_header->flags = htons(skip_csum);
   tun_header->proto = htons(proto);
 }
 
@@ -491,8 +491,9 @@ void send_rawv6(int fd, clat_packet out, int iov_len) {
  * to_ipv6    - true if translating to ipv6, false if translating to ipv4
  * packet     - packet
  * packetsize - size of packet
+ * skip_csum  - true if kernel has to skip checksum validation, false if it has to validate checksum.
  */
-void translate_packet(int fd, int to_ipv6, const uint8_t *packet, size_t packetsize) {
+void translate_packet(int fd, int to_ipv6, const uint8_t *packet, size_t packetsize, uint16_t skip_csum) {
   int iov_len = 0;
 
   // Allocate buffers for all packet headers.
@@ -524,7 +525,7 @@ void translate_packet(int fd, int to_ipv6, const uint8_t *packet, size_t packets
   } else {
     iov_len = ipv6_packet(out, CLAT_POS_IPHDR, packet, packetsize);
     if (iov_len > 0) {
-      fill_tun_header(&tun_targ, ETH_P_IP);
+      fill_tun_header(&tun_targ, ETH_P_IP, skip_csum);
       out[CLAT_POS_TUNHDR].iov_len = sizeof(tun_targ);
       send_tun(fd, out, iov_len);
     }

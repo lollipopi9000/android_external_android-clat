@@ -30,6 +30,7 @@ extern "C" {
 #include "translate.h"
 #include "config.h"
 #include "clatd.h"
+#include "ring.h"
 }
 
 // For convenience.
@@ -456,7 +457,7 @@ void do_translate_packet(const uint8_t *original, size_t original_len, uint8_t *
       break;
   }
 
-  translate_packet(write_fd, (version == 4), original, original_len);
+  translate_packet(write_fd, (version == 4), original, original_len, TP_CSUM_NONE);
 
   snprintf(foo, sizeof(foo), "%s: Invalid translated packet", msg);
   if (version == 6) {

@@ -117,9 +117,19 @@ static struct tpacket2_hdr* ring_advance(struct packet_ring *ring) {
  */
 void ring_read(struct packet_ring *ring, int write_fd, int to_ipv6) {
   struct tpacket2_hdr *tp = ring->next;
+  uint16_t val = TP_CSUM_NONE;
   if (tp->tp_status & TP_STATUS_USER) {
+    //We expect only GRO coalesced packets to have TP_STATUS_CSUMNOTREADY
+    //(ip_summed = CHECKSUM_PARTIAL) in this path. Note that these packets have already gone
+    //through checksum validation in GRO engine. CHECKSUM_PARTIAL is defined to be 3 while
+    //CHECKSUM_UNNECESSARY is defined to be 1.
+    //Kernel only checks for CHECKSUM_UNNECESSARY (TP_CSUM_UNNECESSARY) bit while processing a
+    //packet, so its ok to pass only this bit rather than the full ip_summed field.
+    if ((tp->tp_status & TP_STATUS_CSUMNOTREADY) || (tp->tp_status & TP_STATUS_CSUM_UNNECESSARY)) {
+      val = TP_CSUM_UNNECESSARY;
+    }
     uint8_t *packet = ((uint8_t *) tp) + tp->tp_net;
-    translate_packet(write_fd, to_ipv6, packet, tp->tp_len);
+    translate_packet(write_fd, to_ipv6, packet, tp->tp_len, val);
     tp->tp_status = TP_STATUS_KERNEL;
     tp = ring_advance(ring);
   }

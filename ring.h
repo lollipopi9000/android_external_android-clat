@@ -42,6 +42,9 @@ struct tun_data;
 // results in 656 frames (1048576 bytes).
 #define TP_NUM_BLOCKS 16
 
+#define TP_CSUM_NONE        (0)
+#define TP_CSUM_UNNECESSARY (1)
+
 struct packet_ring {
   uint8_t *base;
   struct tpacket2_hdr *next;
