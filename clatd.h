@@ -21,7 +21,8 @@
 #include <sys/uio.h>
 
 #define MAXMTU 1500
-#define PACKETLEN (MAXMTU+sizeof(struct tun_pi))
+#define MAXMRU 65536
+#define PACKETLEN (MAXMRU+sizeof(struct tun_pi))
 #define CLATD_VERSION "1.4"
 
 #define ARRAY_SIZE(x) (sizeof(x) / sizeof((x)[0]))

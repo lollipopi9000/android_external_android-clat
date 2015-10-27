@@ -42,14 +42,14 @@ uint16_t packet_length(clat_packet packet, clat_packet_index pos);
 int is_in_plat_subnet(const struct in6_addr *addr6);
 
 // Functions to create tun, IPv4, and IPv6 headers.
-void fill_tun_header(struct tun_pi *tun_header, uint16_t proto);
+void fill_tun_header(struct tun_pi *tun_header, uint16_t proto, uint16_t skip_csum);
 void fill_ip_header(struct iphdr *ip_targ, uint16_t payload_len, uint8_t protocol,
                     const struct ip6_hdr *old_header);
 void fill_ip6_header(struct ip6_hdr *ip6, uint16_t payload_len, uint8_t protocol,
                      const struct iphdr *old_header);
 
 // Translate and send packets.
-void translate_packet(int fd, int to_ipv6, const uint8_t *packet, size_t packetsize);
+void translate_packet(int fd, int to_ipv6, const uint8_t *packet, size_t packetsize, uint16_t skip_csum);
 
 // Translate IPv4 and IPv6 packets.
 int ipv4_packet(clat_packet out, clat_packet_index pos, const uint8_t *packet, size_t len);

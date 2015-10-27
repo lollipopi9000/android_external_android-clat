@@ -27,10 +27,10 @@ struct tun_data;
 
 // Frame size. Must be a multiple of TPACKET_ALIGNMENT (=16)
 // Why the 16? http://lxr.free-electrons.com/source/net/packet/af_packet.c?v=3.4#L1764
-#define TP_FRAME_SIZE (TPACKET_ALIGN(MAXMTU) + TPACKET_ALIGN(TPACKET2_HDRLEN) + 16)
+#define TP_FRAME_SIZE (TPACKET_ALIGN(MAXMRU) + TPACKET_ALIGN(TPACKET2_HDRLEN) + 16)
 
 // Block size. Must be a multiple of the page size, and a power of two for efficient memory use.
-#define TP_BLOCK_SIZE 65536
+#define TP_BLOCK_SIZE 2686976
 
 // In order to save memory, our frames are not an exact divider of the block size. Therefore, the
 // mmaped region will have gaps corresponding to the empty space at the end of each block.
@@ -41,6 +41,9 @@ struct tun_data;
 // opened before we drop privileges, but the configuration file is read after. A value of 16
 // results in 656 frames (1048576 bytes).
 #define TP_NUM_BLOCKS 16
+
+#define TP_CSUM_NONE        (0)
+#define TP_CSUM_UNNECESSARY (1)
 
 struct packet_ring {
   uint8_t *base;

@@ -30,6 +30,7 @@ extern "C" {
 #include "translate.h"
 #include "config.h"
 #include "clatd.h"
+#include "ring.h"
 }
 
 // For convenience.
@@ -456,7 +457,7 @@ void do_translate_packet(const uint8_t *original, size_t original_len, uint8_t *
       break;
   }
 
-  translate_packet(write_fd, (version == 4), original, original_len);
+  translate_packet(write_fd, (version == 4), original, original_len, TP_CSUM_NONE);
 
   snprintf(foo, sizeof(foo), "%s: Invalid translated packet", msg);
   if (version == 6) {
@@ -485,7 +486,7 @@ void do_translate_packet(const uint8_t *original, size_t original_len, uint8_t *
 
 void check_translated_packet(const uint8_t *original, size_t original_len,
                              const uint8_t *expected, size_t expected_len, const char *msg) {
-  uint8_t translated[MAXMTU];
+  uint8_t translated[MAXMRU];
   size_t translated_len = sizeof(translated);
   do_translate_packet(original, original_len, translated, &translated_len, msg);
   EXPECT_EQ(expected_len, translated_len) << msg << ": Translated packet length incorrect\n";
@@ -504,12 +505,12 @@ void check_fragment_translation(const uint8_t *original[], const size_t original
   }
 
   // Sanity check that reassembling the original and translated fragments produces valid packets.
-  uint8_t reassembled[MAXMTU];
+  uint8_t reassembled[MAXMRU];
   size_t reassembled_len = sizeof(reassembled);
   reassemble_packet(original, original_lengths, numfragments, reassembled, &reassembled_len, msg);
   check_packet(reassembled, reassembled_len, msg);
 
-  uint8_t translated[MAXMTU];
+  uint8_t translated[MAXMRU];
   size_t translated_len = sizeof(translated);
   do_translate_packet(reassembled, reassembled_len, translated, &translated_len, msg);
   check_packet(translated, translated_len, msg);
@@ -771,7 +772,7 @@ TEST_F(ClatdTest, DataSanitycheck) {
   check_packet(ipv6_ping, sizeof(ipv6_ping), "IPv6 ping sanity check");
 
   // Sanity checks reassemble_packet.
-  uint8_t reassembled[MAXMTU];
+  uint8_t reassembled[MAXMRU];
   size_t total_length = sizeof(reassembled);
   reassemble_packet(kIPv4Fragments, kIPv4FragLengths, ARRAYSIZE(kIPv4Fragments),
                     reassembled, &total_length, "Reassembly sanity check");
@@ -897,7 +898,7 @@ TEST_F(ClatdTest, Fragmentation) {
 
 void check_translate_checksum_neutral(const uint8_t *original, size_t original_len,
                                       size_t expected_len, const char *msg) {
-  uint8_t translated[MAXMTU];
+  uint8_t translated[MAXMRU];
   size_t translated_len = sizeof(translated);
   do_translate_packet(original, original_len, translated, &translated_len, msg);
   EXPECT_EQ(expected_len, translated_len) << msg << ": Translated packet length incorrect\n";
