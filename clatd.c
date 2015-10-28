@@ -496,9 +496,6 @@ int main(int argc, char **argv) {
   // run under a regular user
   drop_root();
 
-  //check HW features and disable checksum validation if already handled by hardware
-  rx_checksum_offloaded = check_csum_offload(uplink_interface);
-
   // we can create tun devices as non-root because we're in the VPN group.
   tunnel.fd4 = tun_open();
   if(tunnel.fd4 < 0) {

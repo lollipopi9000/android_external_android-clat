@@ -33,6 +33,5 @@ int tun_open();
 int tun_alloc(char *dev, int fd);
 int send_tun(int fd, clat_packet out, int iov_len);
 int set_nonblocking(int fd);
-int check_csum_offload(char *dev);
 
 #endif

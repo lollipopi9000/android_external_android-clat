@@ -22,13 +22,9 @@
 #include <linux/if.h>
 #include <linux/if_tun.h>
 #include <sys/ioctl.h>
-#include <linux/ethtool.h>
 #include <sys/uio.h>
 
-#include "config.h"
 #include "clatd.h"
-
-int rx_checksum_offloaded = 0;
 
 /* function: tun_open
  * tries to open the tunnel device
@@ -65,11 +61,6 @@ int tun_alloc(char *dev, int fd) {
     return err;
   }
   strcpy(dev, ifr.ifr_name);
-
-  if (rx_checksum_offloaded) {
-    ioctl(fd, TUNSETNOCSUM, 1);
-  }
-
   return 0;
 }
 
@@ -95,66 +86,4 @@ int set_nonblocking(int fd) {
  */
 int send_tun(int fd, clat_packet out, int iov_len) {
   return writev(fd, out, iov_len);
-}
-
-/* function: get_ethtool_feature_val
- * gets if a particular ethtool feature is enabled
- * dev     - the device name to query the feature on
- * cmd     - the feature to query
- * returns: 1 if feature is enabled, 0 if disabled
- */
-int get_ethtool_feature_val(char *dev, int cmd) {
-  int fd;
-  struct ifreq ifr;
-  struct ethtool_value eval;
-
-  if (!dev){
-    return 0;
-  }
-
-  if((fd = socket(AF_INET, SOCK_DGRAM, 0)) < 0 ) {
-    return 0;
-  }
-
-  memset(&ifr, 0, sizeof(ifr));
-  memset(&eval, 0, sizeof(eval));
-  strlcpy(ifr.ifr_name, dev, sizeof(ifr.ifr_name));
-  eval.cmd = cmd;
-  eval.data = 0;
-  ifr.ifr_data = (caddr_t)&eval;
-  if (ioctl(fd, SIOCETHTOOL, &ifr) == -1) {
-      close(fd);
-      return 0;
-  }
-
-  close(fd);
-
-  if (!eval.data) {
-    return 0;
-  }
-
-  return 1;
-}
-
-/* function: check_csum_offload
- * checks if GRO and RXCSUM are enabled on the device
- * dev     - the device name to query on
- * returns: 1 if checksum is offloaded, 0 if checksum needs
- *          to be validated in network stack.
- */
-int check_csum_offload(char *dev) {
-  int fd;
-  struct ifreq ifr;
-  struct ethtool_value eval;
-
-  if (!dev){
-    return 0;
-  }
-
-  if(get_ethtool_feature_val(dev, ETHTOOL_GGRO) &&
-     get_ethtool_feature_val(dev, ETHTOOL_GRXCSUM)) {
-    return 1;
-  }
-
-  return 0;
 }
