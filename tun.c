@@ -143,10 +143,6 @@ int get_ethtool_feature_val(char *dev, int cmd) {
  *          to be validated in network stack.
  */
 int check_csum_offload(char *dev) {
-  int fd;
-  struct ifreq ifr;
-  struct ethtool_value eval;
-
   if (!dev){
     return 0;
   }
