@@ -39,8 +39,6 @@ struct clat_config {
 
 extern struct clat_config Global_Clatd_Config;
 
-extern int rx_checksum_offloaded;
-
 int read_config(const char *file, const char *uplink_interface, const char *plat_prefix,
         unsigned net_id);
 void config_generate_local_ipv6_subnet(struct in6_addr *interface_ip);
