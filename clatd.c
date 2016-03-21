@@ -392,9 +392,9 @@ void event_loop(struct tun_data *tunnel) {
       // subsequent poll() will return immediately with POLLERR again,
       // causing this code to spin in a loop. Calling read() will clear the
       // socket error flag instead.
-      if (wait_fd[0].revents) {
-        ring_read(&tunnel->ring, tunnel->fd4, 0 /* to_ipv6 */);
-      }
+ //     if (wait_fd[0].revents) {
+ //       ring_read(&tunnel->ring, tunnel->fd4, 0 /* to_ipv6 *///);
+ //     }
       if (wait_fd[1].revents) {
         read_packet(tunnel->fd4, tunnel->write_fd6, 1 /* to_ipv6 */);
       }

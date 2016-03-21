@@ -115,7 +115,7 @@ static struct tpacket2_hdr* ring_advance(struct packet_ring *ring) {
  * write_fd - file descriptor to write translated packet to
  * to_ipv6  - whether the packet is to be translated to ipv6 or ipv4
  */
-void ring_read(struct packet_ring *ring, int write_fd, int to_ipv6) {
+/*void ring_read(struct packet_ring *ring, int write_fd, int to_ipv6) {
   struct tpacket2_hdr *tp = ring->next;
   uint16_t val = TP_CSUM_NONE;
   if (tp->tp_status & TP_STATUS_USER) {
@@ -134,3 +134,4 @@ void ring_read(struct packet_ring *ring, int write_fd, int to_ipv6) {
     tp = ring_advance(ring);
   }
 }
+*/
