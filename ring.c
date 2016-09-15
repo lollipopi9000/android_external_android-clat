@@ -89,7 +89,7 @@ int ring_create(struct tun_data *tunnel) {
  * advances to the next position in the packet ring
  * ring - packet ring buffer
  */
-static struct tpacket2_hdr* ring_advance(struct packet_ring *ring) {
+/*static struct tpacket2_hdr* ring_advance(struct packet_ring *ring) {
   uint8_t *next = (uint8_t *) ring->next;
 
   ring->slot++;
@@ -110,7 +110,7 @@ static struct tpacket2_hdr* ring_advance(struct packet_ring *ring) {
   ring->next = (struct tpacket2_hdr *) next;
   return ring->next;
 }
-
+*/
 /* function: ring_read
  * reads a packet from the ring buffer and translates it
  * read_fd  - file descriptor to read original packet from
